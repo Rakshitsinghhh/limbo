@@ -1,0 +1,28 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# Databases & runtime data
+*.db
+*.db-shm
+*.db-wal
+limbo.db
+
+# Node.js dependencies
+node_modules/
+npm-debug.log*
+
+# Environment variables
+.env
+.env.local
+
+# IDE / System files
+.DS_Store
+.vscode/
+.idea/
