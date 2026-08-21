@@ -1,6 +1,6 @@
 """
-Vercel Serverless Function (WSGI Application with Static Fallback) for Project Limbo
-Handles both API routes and static frontend file serving safely.
+Vercel Serverless Function (WSGI Application for /api/* Routes) for Project Limbo
+Handles API endpoints cleanly without reading static files from disk inside lambda containers.
 """
 
 import sys
@@ -15,8 +15,6 @@ os.environ["DB_PATH"] = "/tmp/limbo.db"
 
 # Ensure project root is in sys.path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-PUBLIC_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "public")
 
 from src_py import db
 from src_py.simulator import simulator
@@ -81,35 +79,6 @@ def app(environ, start_response):
     query_string = environ.get("QUERY_STRING", "")
     query = urllib.parse.parse_qs(query_string)
 
-    ensure_initialized()
-
-    # Serve static assets if root or asset path is requested directly
-    if path in ["/", "", "/index.html"]:
-        file_path = os.path.join(PUBLIC_DIR, "index.html")
-        if os.path.exists(file_path):
-            with open(file_path, "rb") as f:
-                body = f.read()
-            start_response("200 OK", [("Content-Type", "text/html"), ("Content-Length", str(len(body)))])
-            return [body]
-
-    if path.startswith("/css/") or path.startswith("/js/"):
-        rel_path = path.lstrip("/")
-        file_path = os.path.join(PUBLIC_DIR, rel_path)
-        if os.path.exists(file_path):
-            content_type = "text/css" if path.startswith("/css/") else "application/javascript"
-            with open(file_path, "rb") as f:
-                body = f.read()
-            start_response("200 OK", [("Content-Type", content_type), ("Content-Length", str(len(body)))])
-            return [body]
-
-    # Process engine lifecycle steps safely
-    try:
-        active_poller.poll_pending_transactions()
-        decision_engine.process_limbo_decisions()
-        retry_budget_manager.process_failed_transaction_retries()
-    except Exception as e:
-        print("Engine step warning:", e)
-
     headers = [
         ("Content-Type", "application/json"),
         ("Access-Control-Allow-Origin", "*"),
@@ -120,6 +89,14 @@ def app(environ, start_response):
     if method == "OPTIONS":
         start_response("200 OK", headers)
         return [b""]
+
+    try:
+        ensure_initialized()
+        active_poller.poll_pending_transactions()
+        decision_engine.process_limbo_decisions()
+        retry_budget_manager.process_failed_transaction_retries()
+    except Exception as e:
+        print("Engine execution warning:", e)
 
     if path.endswith("/api/stats") or path == "/api/stats":
         total_txns = db.fetch_one("SELECT COUNT(*) as count FROM transactions")["count"]
@@ -219,6 +196,6 @@ def app(environ, start_response):
         return [body]
 
     else:
-        body = json.dumps({"error": "Route not found", "path": path}).encode("utf-8")
-        start_response("404 Not Found", headers)
+        body = json.dumps({"status": "Project Limbo Engine API Active", "path": path}).encode("utf-8")
+        start_response("200 OK", headers)
         return [body]
