@@ -34,6 +34,35 @@ Project Limbo shifts the paradigm in payment recovery: instead of passively wait
 
 ---
 
+## 🌐 How to Deploy to Vercel
+
+The project is pre-configured with `vercel.json` and a Python serverless function entrypoint (`api/index.py`).
+
+### Option A: 1-Click Import via GitHub (Recommended)
+
+1. Log into your [Vercel Dashboard](https://vercel.com).
+2. Click **Add New...** → **Project**.
+3. Import your GitHub repository: `Rakshitsinghhh/limbo`.
+4. Leave framework settings as default.
+5. Click **Deploy**. Vercel will build the Python serverless function and static dashboard automatically!
+
+### Option B: Deploy via Vercel CLI
+
+1. Install Vercel CLI globally (if not installed):
+   ```bash
+   npm install -g vercel
+   ```
+
+2. Run `vercel` from project root:
+   ```bash
+   cd /home/rakshit/projects/limbo
+   vercel
+   ```
+
+3. Follow the prompts to deploy to your Vercel account.
+
+---
+
 ## 🎯 How to Use & Test the Prototype
 
 Once the server is running and the dashboard is open in your browser:
