@@ -1,16 +1,18 @@
 """
-Vercel Serverless Function (WSGI Application for /api/* Routes) for Project Limbo
-Handles API endpoints cleanly without reading static files from disk inside lambda containers.
+Vercel Serverless Function Handler for Project Limbo API
+Uses BaseHTTPRequestHandler class handler expected by @vercel/python builder.
 """
 
+from http.server import BaseHTTPRequestHandler
 import sys
 import os
 import json
 import random
+import traceback
 import urllib.parse
 from datetime import datetime, timedelta
 
-# Set DB_PATH to /tmp/limbo.db for writeable Vercel serverless environment
+# Configure SQLite DB path for Vercel writeable /tmp filesystem
 os.environ["DB_PATH"] = "/tmp/limbo.db"
 
 # Ensure project root is in sys.path
@@ -73,129 +75,150 @@ def ensure_initialized():
     db.init_db()
     seed_deterministic_baseline()
 
-def app(environ, start_response):
-    path = environ.get("PATH_INFO", "")
-    method = environ.get("REQUEST_METHOD", "GET")
-    query_string = environ.get("QUERY_STRING", "")
-    query = urllib.parse.parse_qs(query_string)
-
-    headers = [
-        ("Content-Type", "application/json"),
-        ("Access-Control-Allow-Origin", "*"),
-        ("Access-Control-Allow-Methods", "GET, POST, OPTIONS"),
-        ("Access-Control-Allow-Headers", "Content-Type")
-    ]
-
-    if method == "OPTIONS":
-        start_response("200 OK", headers)
-        return [b""]
-
-    try:
-        ensure_initialized()
-        active_poller.poll_pending_transactions()
-        decision_engine.process_limbo_decisions()
-        retry_budget_manager.process_failed_transaction_retries()
-    except Exception as e:
-        print("Engine execution warning:", e)
-
-    if path.endswith("/api/stats") or path == "/api/stats":
-        total_txns = db.fetch_one("SELECT COUNT(*) as count FROM transactions")["count"]
-        pending_limbo = db.fetch_one("SELECT COUNT(*) as count FROM transactions WHERE visible_status = 'pending'")["count"]
-        auto_resolved = db.fetch_one("SELECT COUNT(*) as count FROM transactions WHERE action_taken IN ('AUTO_RESOLVED_SUCCESS', 'WAIT_QUIETLY') OR visible_status = 'success'")["count"]
-        notifications = db.fetch_one("SELECT COUNT(*) as count FROM event_logs WHERE event_type = 'NOTIFICATION_SENT'")["count"]
-        reversals = db.fetch_one("SELECT COUNT(*) as count FROM event_logs WHERE event_type = 'REVERSAL_TRIGGERED'")["count"]
-        retries_blocked = db.fetch_one("SELECT COUNT(*) as count FROM event_logs WHERE event_type = 'RETRY_BLOCKED'")["count"]
-        rev_row = db.fetch_one("SELECT SUM(amount) as total FROM transactions WHERE action_taken = 'RECOVERED_BY_RETRY'")
-        revenue = rev_row["total"] if rev_row and rev_row["total"] else 0.0
-
-        total_retries = db.fetch_one("SELECT COUNT(*) as count FROM event_logs WHERE event_type IN ('RETRY_EXECUTED', 'RETRY_BLOCKED')")["count"]
-        approval_standing = min(99.4, 85.0 + (retries_blocked / total_retries) * 14.4) if total_retries > 0 else 98.2
-
-        data = {
-            "totalTransactions": total_txns,
-            "limboPending": pending_limbo,
-            "autoResolvedCount": auto_resolved,
-            "notificationsSent": notifications,
-            "reversalsTriggered": reversals,
-            "retriesBlocked": retries_blocked,
-            "revenueRecoveredAmount": round(revenue, 2),
-            "avgLimboResolutionSec": 42,
-            "merchantApprovalStanding": round(approval_standing, 1),
-            "isSimulatorRunning": True
-        }
+class handler(BaseHTTPRequestHandler):
+    def send_json_response(self, status_code: int, data: any):
         body = json.dumps(data).encode("utf-8")
-        start_response("200 OK", headers)
-        return [body]
+        self.send_response(status_code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS, HEAD")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
-    elif path.endswith("/api/transactions") or path == "/api/transactions":
-        status_filter = query.get("status", ["all"])[0]
-        bank_filter = query.get("bank", ["all"])[0]
-        limit = int(query.get("limit", [50])[0])
+    def do_HEAD(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
-        sql = "SELECT * FROM transactions"
-        conditions = []
-        params = []
+    def do_OPTIONS(self):
+        self.send_response(200)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS, HEAD")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.end_headers()
 
-        if status_filter != "all":
-            conditions.append("visible_status = ?")
-            params.append(status_filter)
-
-        if bank_filter != "all":
-            conditions.append("issuing_bank = ?")
-            params.append(bank_filter)
-
-        if conditions:
-            sql += " WHERE " + " AND ".join(conditions)
-
-        sql += " ORDER BY created_at DESC LIMIT ?"
-        params.append(limit)
-
-        txns = db.fetch_all(sql, tuple(params))
-        body = json.dumps(txns).encode("utf-8")
-        start_response("200 OK", headers)
-        return [body]
-
-    elif path.endswith("/api/events") or path == "/api/events":
-        limit = int(query.get("limit", [30])[0])
-        events = db.fetch_all("SELECT * FROM event_logs ORDER BY id DESC LIMIT ?", (limit,))
-        body = json.dumps(events).encode("utf-8")
-        start_response("200 OK", headers)
-        return [body]
-
-    elif path.endswith("/api/retry-budgets") or path == "/api/retry-budgets":
-        budgets = db.fetch_all("SELECT * FROM retry_budgets ORDER BY merchant_id, issuing_bank")
-        body = json.dumps(budgets).encode("utf-8")
-        start_response("200 OK", headers)
-        return [body]
-
-    elif path.endswith("/api/simulate/trigger") or path == "/api/simulate/trigger":
-        content_length = int(environ.get("CONTENT_LENGTH", 0) or 0)
-        body_data = environ["wsgi.input"].read(content_length) if content_length > 0 else b"{}"
+    def do_GET(self):
         try:
-            payload = json.loads(body_data.decode("utf-8"))
-        except Exception:
-            payload = {}
+            parsed = urllib.parse.urlparse(self.path)
+            path = parsed.path
+            query = urllib.parse.parse_qs(parsed.query)
 
-        bank = payload.get("bank")
-        rail = payload.get("rail")
-        count = payload.get("count", 1)
-        force_limbo = payload.get("forceLimbo", False)
+            ensure_initialized()
+            
+            try:
+                active_poller.poll_pending_transactions()
+                decision_engine.process_limbo_decisions()
+                retry_budget_manager.process_failed_transaction_retries()
+            except Exception as step_err:
+                print("Engine step warning:", step_err)
 
-        created = []
-        for _ in range(count):
-            txn = simulator.create_transaction({"bank": bank, "rail": rail, "forceLimbo": force_limbo})
-            created.append(txn)
+            if path.endswith("/stats") or path.endswith("/api/stats"):
+                total_txns = db.fetch_one("SELECT COUNT(*) as count FROM transactions")["count"]
+                pending_limbo = db.fetch_one("SELECT COUNT(*) as count FROM transactions WHERE visible_status = 'pending'")["count"]
+                auto_resolved = db.fetch_one("SELECT COUNT(*) as count FROM transactions WHERE action_taken IN ('AUTO_RESOLVED_SUCCESS', 'WAIT_QUIETLY') OR visible_status = 'success'")["count"]
+                notifications = db.fetch_one("SELECT COUNT(*) as count FROM event_logs WHERE event_type = 'NOTIFICATION_SENT'")["count"]
+                reversals = db.fetch_one("SELECT COUNT(*) as count FROM event_logs WHERE event_type = 'REVERSAL_TRIGGERED'")["count"]
+                retries_blocked = db.fetch_one("SELECT COUNT(*) as count FROM event_logs WHERE event_type = 'RETRY_BLOCKED'")["count"]
+                rev_row = db.fetch_one("SELECT SUM(amount) as total FROM transactions WHERE action_taken = 'RECOVERED_BY_RETRY'")
+                revenue = rev_row["total"] if rev_row and rev_row["total"] else 0.0
 
-        body = json.dumps({"success": True, "count": len(created), "transactions": created}).encode("utf-8")
-        start_response("200 OK", headers)
-        return [body]
+                total_retries = db.fetch_one("SELECT COUNT(*) as count FROM event_logs WHERE event_type IN ('RETRY_EXECUTED', 'RETRY_BLOCKED')")["count"]
+                approval_standing = min(99.4, 85.0 + (retries_blocked / total_retries) * 14.4) if total_retries > 0 else 98.2
 
-    elif path.endswith("/api/simulate/toggle") or path == "/api/simulate/toggle":
-        body = json.dumps({"isRunning": True}).encode("utf-8")
-        start_response("200 OK", headers)
-        return [body]
+                data = {
+                    "totalTransactions": total_txns,
+                    "limboPending": pending_limbo,
+                    "autoResolvedCount": auto_resolved,
+                    "notificationsSent": notifications,
+                    "reversalsTriggered": reversals,
+                    "retriesBlocked": retries_blocked,
+                    "revenueRecoveredAmount": round(revenue, 2),
+                    "avgLimboResolutionSec": 42,
+                    "merchantApprovalStanding": round(approval_standing, 1),
+                    "isSimulatorRunning": True
+                }
+                self.send_json_response(200, data)
 
-    else:
-        body = json.dumps({"status": "Project Limbo Engine API Active", "path": path}).encode("utf-8")
-        start_response("200 OK", headers)
-        return [body]
+            elif path.endswith("/transactions") or path.endswith("/api/transactions"):
+                status_filter = query.get("status", ["all"])[0]
+                bank_filter = query.get("bank", ["all"])[0]
+                limit = int(query.get("limit", [50])[0])
+
+                sql = "SELECT * FROM transactions"
+                conditions = []
+                params = []
+
+                if status_filter != "all":
+                    conditions.append("visible_status = ?")
+                    params.append(status_filter)
+
+                if bank_filter != "all":
+                    conditions.append("issuing_bank = ?")
+                    params.append(bank_filter)
+
+                if conditions:
+                    sql += " WHERE " + " AND ".join(conditions)
+
+                sql += " ORDER BY created_at DESC LIMIT ?"
+                params.append(limit)
+
+                txns = db.fetch_all(sql, tuple(params))
+                self.send_json_response(200, txns)
+
+            elif path.endswith("/events") or path.endswith("/api/events"):
+                limit = int(query.get("limit", [30])[0])
+                events = db.fetch_all("SELECT * FROM event_logs ORDER BY id DESC LIMIT ?", (limit,))
+                self.send_json_response(200, events)
+
+            elif path.endswith("/retry-budgets") or path.endswith("/api/retry-budgets"):
+                budgets = db.fetch_all("SELECT * FROM retry_budgets ORDER BY merchant_id, issuing_bank")
+                self.send_json_response(200, budgets)
+
+            else:
+                self.send_json_response(200, {"status": "Project Limbo Engine API Active", "path": path})
+
+        except Exception as fatal_err:
+            err_msg = traceback.format_exc()
+            print("Fatal BaseHTTPRequestHandler Error:", err_msg)
+            self.send_json_response(500, {"error": "Internal Server Error", "detail": str(fatal_err)})
+
+    def do_POST(self):
+        try:
+            parsed = urllib.parse.urlparse(self.path)
+            path = parsed.path
+
+            content_length = int(self.headers.get("Content-Length", 0) or 0)
+            body_data = self.rfile.read(content_length) if content_length > 0 else b"{}"
+            try:
+                payload = json.loads(body_data.decode("utf-8"))
+            except Exception:
+                payload = {}
+
+            ensure_initialized()
+
+            if path.endswith("/trigger") or path.endswith("/api/simulate/trigger"):
+                bank = payload.get("bank")
+                rail = payload.get("rail")
+                count = payload.get("count", 1)
+                force_limbo = payload.get("forceLimbo", False)
+
+                created = []
+                for _ in range(count):
+                    txn = simulator.create_transaction({"bank": bank, "rail": rail, "forceLimbo": force_limbo})
+                    created.append(txn)
+
+                self.send_json_response(200, {"success": True, "count": len(created), "transactions": created})
+
+            elif path.endswith("/toggle") or path.endswith("/api/simulate/toggle"):
+                self.send_json_response(200, {"isRunning": True})
+
+            else:
+                self.send_json_response(200, {"status": "Project Limbo Engine API Active"})
+
+        except Exception as fatal_err:
+            err_msg = traceback.format_exc()
+            print("Fatal BaseHTTPRequestHandler POST Error:", err_msg)
+            self.send_json_response(500, {"error": "Internal Server Error", "detail": str(fatal_err)})
