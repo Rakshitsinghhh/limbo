@@ -63,6 +63,20 @@ The project is pre-configured with `vercel.json` and a Python serverless functio
 
 ---
 
+## 🚂 How to Deploy to Railway (Recommended for 24/7 Background Workers)
+
+Vercel functions are stateless and wake up only per HTTP request. To have **24/7 continuous background payment generation, active polling loops, and real-time SSE streams running perpetually**, Railway is the ideal platform.
+
+The project is pre-configured with **`Procfile`** and **`railway.json`**.
+
+### 1-Click Import via Railway:
+
+1. Log into your [Railway Dashboard](https://railway.app).
+2. Click **New Project** → **Deploy from GitHub repo**.
+3. Select your repository: **`Rakshitsinghhh/limbo`**.
+4. Railway will automatically detect `Procfile` and launch `python3 main.py`.
+5. Under project settings, click **Generate Domain** to get your public live URL (e.g., `https://limbo-production.up.railway.app`).
+
 ## 🎯 How to Use & Test the Prototype
 
 Once the server is running and the dashboard is open in your browser:
