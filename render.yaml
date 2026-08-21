@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: project-limbo
+    env: python
+    region: oregon
+    plan: free
+    buildCommand: "echo 'No build dependencies needed'"
+    startCommand: "python3 main.py"
+    envVars:
+      - key: PORT
+        value: 10000

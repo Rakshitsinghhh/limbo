@@ -63,19 +63,30 @@ The project is pre-configured with `vercel.json` and a Python serverless functio
 
 ---
 
-## 🚂 How to Deploy to Railway (Recommended for 24/7 Background Workers)
+## 🎨 How to Deploy to Render (Recommended Free 24/7 Web Service)
 
-Vercel functions are stateless and wake up only per HTTP request. To have **24/7 continuous background payment generation, active polling loops, and real-time SSE streams running perpetually**, Railway is the ideal platform.
+Render provides a **100% Free Web Service tier** that runs `python3 main.py` continuously 24/7 with background polling, simulation loops, and static UI dashboard serving.
 
-The project is pre-configured with **`Procfile`** and **`railway.json`**.
+The project is pre-configured with **`render.yaml`** and **`Procfile`**.
 
-### 1-Click Import via Railway:
+### 1-Click Import via Render (Free):
 
-1. Log into your [Railway Dashboard](https://railway.app).
-2. Click **New Project** → **Deploy from GitHub repo**.
-3. Select your repository: **`Rakshitsinghhh/limbo`**.
-4. Railway will automatically detect `Procfile` and launch `python3 main.py`.
-5. Under project settings, click **Generate Domain** to get your public live URL (e.g., `https://limbo-production.up.railway.app`).
+1. Log into your [Render Dashboard](https://dashboard.render.com).
+2. Click **New +** → **Blueprint**.
+3. Connect your GitHub repository: **`Rakshitsinghhh/limbo`**.
+4. Render will automatically read `render.yaml` and deploy `project-limbo` as a Free Web Service!
+5. Once deployed, Render will provide a free live URL (e.g., `https://project-limbo.onrender.com`).
+
+---
+
+## ⚡ Alternative Free Option: Koyeb
+
+Koyeb offers a **Free Micro Instance (512MB RAM)** with instant continuous deployment:
+
+1. Log into your [Koyeb Dashboard](https://app.koyeb.com).
+2. Click **Create Service** → **GitHub**.
+3. Select **`Rakshitsinghhh/limbo`**.
+4. Set run command to `python3 main.py` and click **Deploy**.
 
 ## 🎯 How to Use & Test the Prototype
 
