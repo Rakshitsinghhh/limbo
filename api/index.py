@@ -1,13 +1,14 @@
 """
-Vercel Serverless Function (WSGI Application) for Project Limbo
-Processes API requests, executes engine steps per request, and handles database storage in /tmp.
+Vercel Serverless Function (Deterministic State Handler) for Project Limbo
+Guarantees consistent, non-jumping metrics across serverless containers on Vercel.
 """
 
 import sys
 import os
 import json
+import random
 import urllib.parse
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # Set DB_PATH to /tmp/limbo.db for writeable Vercel serverless environment
 os.environ["DB_PATH"] = "/tmp/limbo.db"
@@ -21,14 +22,61 @@ from src_py.active_poller import active_poller
 from src_py.decision_engine import decision_engine
 from src_py.retry_budget import retry_budget_manager
 
+def seed_deterministic_baseline():
+    count_row = db.fetch_one("SELECT COUNT(*) as count FROM transactions")
+    if count_row and count_row["count"] > 0:
+        return
+
+    # Deterministic random seed ensures every cold-started container builds identical state
+    random.seed(42)
+
+    now = datetime.utcnow()
+
+    # Pre-defined realistic baseline transactions
+    baseline_txns = [
+        {"id": "TXN_1001_HDFC", "merchant_id": "MERCHANT_ALPHA", "customer_id": "CUST_88412", "issuing_bank": "HDFC", "rail": "UPI_AUTOPAY", "amount": 1450.0, "visible_status": "success", "true_status": "success", "failure_reason": "NONE", "expected_window_sec": 30, "is_ambiguous": 0, "probability_score": 0.92, "retry_count": 0, "action_taken": "NONE"},
+        {"id": "TXN_1002_SBI", "merchant_id": "MERCHANT_BETA", "customer_id": "CUST_34190", "issuing_bank": "SBI", "rail": "NACH", "amount": 3200.0, "visible_status": "pending", "true_status": "success", "failure_reason": "NONE", "expected_window_sec": 14400, "is_ambiguous": 1, "probability_score": 0.68, "retry_count": 0, "action_taken": "NOTIFY_CUSTOMER"},
+        {"id": "TXN_1003_ICICI", "merchant_id": "MERCHANT_ALPHA", "customer_id": "CUST_90214", "issuing_bank": "ICICI", "rail": "CARD", "amount": 2150.0, "visible_status": "success", "true_status": "success", "failure_reason": "NONE", "expected_window_sec": 15, "is_ambiguous": 0, "probability_score": 0.95, "retry_count": 1, "action_taken": "RECOVERED_BY_RETRY"},
+        {"id": "TXN_1004_SBI", "merchant_id": "MERCHANT_DELTA", "customer_id": "CUST_11029", "issuing_bank": "SBI", "rail": "UPI_AUTOPAY", "amount": 1850.0, "visible_status": "pending", "true_status": "success", "failure_reason": "NONE", "expected_window_sec": 45, "is_ambiguous": 1, "probability_score": 0.84, "retry_count": 0, "action_taken": "WAIT_QUIETLY"},
+        {"id": "TXN_1005_AXIS", "merchant_id": "MERCHANT_GAMMA", "customer_id": "CUST_77412", "issuing_bank": "AXIS", "rail": "CARD", "amount": 980.0, "visible_status": "reversed", "true_status": "failed", "failure_reason": "BANK_TIMEOUT", "expected_window_sec": 18, "is_ambiguous": 0, "probability_score": 0.22, "retry_count": 0, "action_taken": "AUTO_REVERSAL"},
+        {"id": "TXN_1006_KOTAK", "merchant_id": "MERCHANT_ALPHA", "customer_id": "CUST_55198", "issuing_bank": "KOTAK", "rail": "NACH", "amount": 4100.0, "visible_status": "success", "true_status": "success", "failure_reason": "NONE", "expected_window_sec": 6000, "is_ambiguous": 0, "probability_score": 0.88, "retry_count": 0, "action_taken": "NONE"},
+        {"id": "TXN_1007_HDFC", "merchant_id": "MERCHANT_BETA", "customer_id": "CUST_66301", "issuing_bank": "HDFC", "rail": "CARD", "amount": 1250.0, "visible_status": "failed", "true_status": "failed", "failure_reason": "INSUFFICIENT_FUNDS", "expected_window_sec": 15, "is_ambiguous": 0, "probability_score": 0.15, "retry_count": 1, "action_taken": "RETRY_BLOCKED"},
+        {"id": "TXN_1008_SBI", "merchant_id": "MERCHANT_GAMMA", "customer_id": "CUST_44910", "issuing_bank": "SBI", "rail": "UPI_AUTOPAY", "amount": 2750.0, "visible_status": "pending", "true_status": "success", "failure_reason": "NONE", "expected_window_sec": 45, "is_ambiguous": 1, "probability_score": 0.76, "retry_count": 0, "action_taken": "WAIT_QUIETLY"},
+        {"id": "TXN_1009_ICICI", "merchant_id": "MERCHANT_DELTA", "customer_id": "CUST_22891", "issuing_bank": "ICICI", "rail": "UPI_AUTOPAY", "amount": 3400.0, "visible_status": "success", "true_status": "success", "failure_reason": "NONE", "expected_window_sec": 25, "is_ambiguous": 0, "probability_score": 0.91, "retry_count": 1, "action_taken": "RECOVERED_BY_RETRY"}
+    ]
+
+    for t in baseline_txns:
+        debit_time = (now - timedelta(minutes=random.randint(2, 60))).isoformat()
+        sla_time = (now + timedelta(seconds=t["expected_window_sec"] * 2)).isoformat()
+        true_res_time = (now + timedelta(seconds=120)).isoformat()
+
+        db.execute(
+            """INSERT INTO transactions (
+                id, merchant_id, customer_id, issuing_bank, rail, amount,
+                visible_status, true_status, failure_reason, debit_timestamp,
+                expected_window_sec, sla_deadline, true_resolution_time, is_ambiguous,
+                probability_score, retry_count, action_taken
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                t["id"], t["merchant_id"], t["customer_id"], t["issuing_bank"], t["rail"], t["amount"],
+                t["visible_status"], t["true_status"], t["failure_reason"], debit_time,
+                t["expected_window_sec"], sla_time, true_res_time, t["is_ambiguous"],
+                t["probability_score"], t["retry_count"], t["action_taken"]
+            )
+        )
+
+    # Insert initial events
+    db.log_event("TXN_1002_SBI", "MERCHANT_BETA", "NOTIFICATION_SENT", "Proactive SMS/Email dispatched to Customer CUST_34190: Payment ₹3200 debited, tracked with SBI.")
+    db.log_event("TXN_1003_ICICI", "MERCHANT_ALPHA", "RETRY_EXECUTED", "Smart Retry SUCCESS! Recovered ₹2150 on attempt #1.")
+    db.log_event("TXN_1005_AXIS", "MERCHANT_GAMMA", "REVERSAL_TRIGGERED", "Low confidence & SLA breached. Reversal triggered automatically for TXN_1005_AXIS (₹980).")
+    db.log_event("TXN_1007_HDFC", "MERCHANT_BETA", "RETRY_BLOCKED", "Smart Retry Budgeting blocked retry for TXN_1007_HDFC on HDFC. Merchant approval rating preserved.")
+
+    # Re-reset random seed for subsequent runtime calls
+    random.seed()
+
 def ensure_initialized():
     db.init_db()
-    count_row = db.fetch_one("SELECT COUNT(*) as count FROM transactions")
-    if not count_row or count_row["count"] == 0:
-        for _ in range(10):
-            simulator.create_transaction()
-        simulator.create_transaction({"bank": "SBI", "rail": "UPI_AUTOPAY", "forceLimbo": True})
-        simulator.create_transaction({"bank": "HDFC", "rail": "NACH", "forceLimbo": True})
+    seed_deterministic_baseline()
 
 def app(environ, start_response):
     path = environ.get("PATH_INFO", "")
@@ -38,13 +86,13 @@ def app(environ, start_response):
 
     ensure_initialized()
 
-    # Process engine lifecycle steps on each API request
+    # Execute poller & decision engine steps safely
     try:
         active_poller.poll_pending_transactions()
         decision_engine.process_limbo_decisions()
         retry_budget_manager.process_failed_transaction_retries()
     except Exception as e:
-        print("Engine step error:", e)
+        print("Engine step warning:", e)
 
     headers = [
         ("Content-Type", "application/json"),
