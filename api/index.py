@@ -1,6 +1,6 @@
 """
-Vercel Serverless Function (Deterministic State Handler) for Project Limbo
-Guarantees consistent, non-jumping metrics across serverless containers on Vercel.
+Vercel Serverless Function (WSGI Application with Static Fallback) for Project Limbo
+Handles both API routes and static frontend file serving safely.
 """
 
 import sys
@@ -16,6 +16,8 @@ os.environ["DB_PATH"] = "/tmp/limbo.db"
 # Ensure project root is in sys.path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+PUBLIC_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "public")
+
 from src_py import db
 from src_py.simulator import simulator
 from src_py.active_poller import active_poller
@@ -27,12 +29,9 @@ def seed_deterministic_baseline():
     if count_row and count_row["count"] > 0:
         return
 
-    # Deterministic random seed ensures every cold-started container builds identical state
     random.seed(42)
-
     now = datetime.utcnow()
 
-    # Pre-defined realistic baseline transactions
     baseline_txns = [
         {"id": "TXN_1001_HDFC", "merchant_id": "MERCHANT_ALPHA", "customer_id": "CUST_88412", "issuing_bank": "HDFC", "rail": "UPI_AUTOPAY", "amount": 1450.0, "visible_status": "success", "true_status": "success", "failure_reason": "NONE", "expected_window_sec": 30, "is_ambiguous": 0, "probability_score": 0.92, "retry_count": 0, "action_taken": "NONE"},
         {"id": "TXN_1002_SBI", "merchant_id": "MERCHANT_BETA", "customer_id": "CUST_34190", "issuing_bank": "SBI", "rail": "NACH", "amount": 3200.0, "visible_status": "pending", "true_status": "success", "failure_reason": "NONE", "expected_window_sec": 14400, "is_ambiguous": 1, "probability_score": 0.68, "retry_count": 0, "action_taken": "NOTIFY_CUSTOMER"},
@@ -65,13 +64,11 @@ def seed_deterministic_baseline():
             )
         )
 
-    # Insert initial events
     db.log_event("TXN_1002_SBI", "MERCHANT_BETA", "NOTIFICATION_SENT", "Proactive SMS/Email dispatched to Customer CUST_34190: Payment ₹3200 debited, tracked with SBI.")
     db.log_event("TXN_1003_ICICI", "MERCHANT_ALPHA", "RETRY_EXECUTED", "Smart Retry SUCCESS! Recovered ₹2150 on attempt #1.")
     db.log_event("TXN_1005_AXIS", "MERCHANT_GAMMA", "REVERSAL_TRIGGERED", "Low confidence & SLA breached. Reversal triggered automatically for TXN_1005_AXIS (₹980).")
     db.log_event("TXN_1007_HDFC", "MERCHANT_BETA", "RETRY_BLOCKED", "Smart Retry Budgeting blocked retry for TXN_1007_HDFC on HDFC. Merchant approval rating preserved.")
 
-    # Re-reset random seed for subsequent runtime calls
     random.seed()
 
 def ensure_initialized():
@@ -86,7 +83,26 @@ def app(environ, start_response):
 
     ensure_initialized()
 
-    # Execute poller & decision engine steps safely
+    # Serve static assets if root or asset path is requested directly
+    if path in ["/", "", "/index.html"]:
+        file_path = os.path.join(PUBLIC_DIR, "index.html")
+        if os.path.exists(file_path):
+            with open(file_path, "rb") as f:
+                body = f.read()
+            start_response("200 OK", [("Content-Type", "text/html"), ("Content-Length", str(len(body)))])
+            return [body]
+
+    if path.startswith("/css/") or path.startswith("/js/"):
+        rel_path = path.lstrip("/")
+        file_path = os.path.join(PUBLIC_DIR, rel_path)
+        if os.path.exists(file_path):
+            content_type = "text/css" if path.startswith("/css/") else "application/javascript"
+            with open(file_path, "rb") as f:
+                body = f.read()
+            start_response("200 OK", [("Content-Type", content_type), ("Content-Length", str(len(body)))])
+            return [body]
+
+    # Process engine lifecycle steps safely
     try:
         active_poller.poll_pending_transactions()
         decision_engine.process_limbo_decisions()
