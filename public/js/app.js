@@ -66,10 +66,28 @@ document.addEventListener('DOMContentLoaded', () => {
           statusBadge = `<span class="badge-clean reversed">reversed</span>`;
         }
 
-        const probPercent = Math.round(txn.probability_score * 100);
-        let probFillClass = '';
-        if (probPercent < 40) probFillClass = 'low';
-        else if (probPercent < 75) probFillClass = 'warn';
+        let probDisplay = '';
+        if (txn.visible_status === 'pending') {
+          const probPercent = Math.round(txn.probability_score * 100);
+          let probFillClass = '';
+          if (probPercent < 40) probFillClass = 'low';
+          else if (probPercent < 75) probFillClass = 'warn';
+
+          probDisplay = `
+            <div class="progress-container">
+              <div class="progress-track">
+                <div class="progress-fill ${probFillClass}" style="width: ${probPercent}%"></div>
+              </div>
+              <span>${probPercent}%</span>
+            </div>
+          `;
+        } else if (txn.visible_status === 'success') {
+          probDisplay = `<span class="text-dim">— (Settled)</span>`;
+        } else if (txn.visible_status === 'reversed') {
+          probDisplay = `<span class="text-dim">— (Reversed)</span>`;
+        } else {
+          probDisplay = `<span class="text-dim">—</span>`;
+        }
 
         let actionText = txn.action_taken || 'NONE';
         if (actionText === 'NOTIFY_CUSTOMER') {
@@ -93,14 +111,7 @@ document.addEventListener('DOMContentLoaded', () => {
             </td>
             <td><strong>₹${txn.amount.toLocaleString('en-IN')}</strong></td>
             <td>${statusBadge}</td>
-            <td>
-              <div class="progress-container">
-                <div class="progress-track">
-                  <div class="progress-fill ${probFillClass}" style="width: ${probPercent}%"></div>
-                </div>
-                <span>${probPercent}%</span>
-              </div>
-            </td>
+            <td>${probDisplay}</td>
             <td>${actionText}</td>
           </tr>
         `;
